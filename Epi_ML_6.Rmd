@@ -1,0 +1,186 @@
+---
+title: "EPI_ML Homework 6"
+author: "Arielle Coq"
+date: "2/25/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library (viridis)
+library(Amelia)
+library(caret)
+library(devtools)
+library(stats)
+library(factoextra)
+library(cluster)
+library(modelr)
+library(mgcv)
+library(NHANES)
+library(rpart)
+library(rpart.plot)
+library(pROC)
+library(e1071)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+####Question 1- 1. Restrict the NHANES data to the list of 12 variables below. Partition the data into training and testing using a 70/30 split.
+
+"Age", "Gender", "Race1", "Education", "HHIncome", "Weight", "Height", "Pulse", "Diabetes", "BMI", "PhysActive", "Smoke100"
+
+First imported the data into R and did some initial data cleaning kept the necessary variables and dropped the NAs in the dataset. 
+```{r}
+data(NHANES)
+
+nhanes <- data(NHANES) 
+view(NHANES)
+
+
+nhanes =
+  NHANES %>%  
+  select(Age, Gender, Race1, Education, HHIncome, Weight, Height, Pulse, Diabetes, BMI, PhysActive, Smoke100) %>% 
+  mutate(Diabetes = recode(Diabetes, "Yes"= 1, "No" = 0)) %>% 
+  drop_na() %>% 
+  janitor::clean_names()
+
+nhanes$diabetes<-as.factor(nhanes$diabetes)
+
+```
+
+Next I will partition the data so that there is a 70/30 split and set the seed to 100. 
+```{r}
+set.seed(100)
+training.data<-nhanes$diabetes %>% createDataPartition(p=0.7, list=F)
+train.data<-nhanes[training.data, ]
+test.data<-nhanes[-training.data, ]
+
+
+#Store outcome 
+diabetes.train<-train.data$diabetes
+diabetes.test<-test.data$diabetes
+
+# Store the outcome in one train and test and the predictors in another 
+#model matrix- will create indicator variables for categorical varaibles, it does not do anything to the continuous variables
+x.train<-model.matrix(diabetes~., train.data)[,-1]
+x.test<-model.matrix(diabetes~., test.data)[,-1]
+```
+
+####Question 2. 2. Construct three prediction models to predict diabetes using the 11 features from NHANES. You will use the following three algorithms to create your prediction models:
+
+a) Classification Tree
+
+b) Support Vector Classifier (i.e. Support Vector Machine with a linear classifier)
+
+c) Logistic regression.
+
+Going to set up a prediction model using a classification tree to predict diabetes using the 11 other features in the NHANES dataset. 
+
+#### Classification Tree prediction Question 2-4
+```{r}
+train.control<-trainControl(method="cv", number=10)
+tree.diabetes<-train(diabetes~., data=train.data, method="rpart",trControl=train.control)
+tree.diabetes$bestTune
+rpart.plot(tree.diabetes$finalModel)
+
+varImp(tree.diabetes)
+
+pred.diabetes<-predict(tree.diabetes, test.data)
+pred.diabetes.prob<-predict(tree.diabetes, test.data, type="prob")
+
+eval.results<-confusionMatrix(pred.diabetes, test.data$diabetes, positive = "1")
+print(eval.results)
+
+analysis <- roc(response=test.data$diabetes, predictor=pred.diabetes.prob[,2])
+plot(1-analysis$specificities,analysis$sensitivities,type="l",
+ylab="Sensitiviy",xlab="1-Specificity",col="black",lwd=2,
+main = "ROC Curve for Greater Diabetes Cases")
+abline(a=0,b=1)
+```
+
+Going to set up a prediction model using a support vector classifer with a linear classifier to predict diabetes using the 11 other features in the NHANES dataset. 
+
+
+#####Support Vector Classifer with a linear classifier model Questions 2-4
+
+```{r}
+svm.diabetes<-svm(diabetes ~ ., data=train.data, kernel="linear", cost=1, scale=TRUE)
+print(svm.diabetes)
+
+
+### Cost- hyper parameter 
+svm.pred<-predict(svm.diabetes, newdata=train.data)
+table(svm.pred, train.data$diabetes)
+
+misClasificError <- mean(svm.pred != train.data$diabetes, na.rm=T)
+print(paste('Accuracy Model 2',1-misClasificError))
+
+features<-x.train
+outcome<-train.data$diabetes
+
+svm_tune <- tune(svm, train.x=features, train.y=outcome,  kernel="linear", range = list(cost=10^(-1:1)))
+
+summary(svm_tune)
+
+svm.diabetes.new<-svm(diabetes ~ ., data=train.data, kernel="linear", cost=0.1,  scale=TRUE)
+
+print(svm.diabetes.new)
+
+svm.pred.new<-predict(svm.diabetes.new, newdata=test.data)
+table(svm.pred.new, test.data$diabetes)
+
+misClasificError.new <- mean(svm.pred.new != train.data$diabetes, na.rm=T)
+print(paste('Accuracy Model 2',1-misClasificError.new))
+```
+
+#### Logistic Regression Model Questions 2-4
+
+```{r}
+model.3<-glm(diabetes~., family = binomial(link = "logit"), data = train.data)
+summary (model.3)
+
+model.3a <-glmnet(x.train, diabetes.train, method = "glm", standardize = TRUE, family = "binomial")
+```
+
+Logistic Regression Prediction 
+
+```{r}
+model.3_fitted<-predict(model.3a, x.test, type= "response")
+
+fitted.results.p <- ifelse( model.3_fitted > 0.5,1,0)
+
+testing.model.3<-(as.numeric(test.data$diabetes)-1)
+
+model.3_Error <- mean(fitted.results.p != testing.model.3, na.rm=T)
+
+print(paste('Accuracy Model 3',1-model.3_Error))
+```
+
+The model that shoud be used based on the three analysis, would be the support vector classifier because it had the best accuracy of 89.62%. The logistis regression is the second best with an accuracy of 89.69%. The third best for this anaylysis is the classification tree wit 89.4% accuracy. 
+
+
+####Question 5. List and describe at least two limitations of the model generated by this analysis. Limitations can be analytical or they can be regarding how the model would be used in practice.
+
+1. One limitation for the svc is that it doesnt perform that great with a larger data set.
+  If the dataset is to larger than it it will take a  long time for the svm code to run depending on the range that is set. The function is looking for the best cost to implement in the prediction model which may take a while to find. 
+2. The second limitaion for svc is that it is harder to interpret compared to a logistic regression and classification tree. 
+  Since SVM uses hyper planes its hard to describe most of the time what is exactly is happening during that time and therefore hard to intrepret the final results. Logistic and classification tree are more straight to the point methods and allow for easy intrepretability. 
+
